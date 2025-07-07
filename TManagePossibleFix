@@ -1,0 +1,305 @@
+using System.Collections.Generic;
+using UnityEngine;
+using System.Linq;
+
+public class TurnManager : MonoBehaviour
+{
+    enum Turn { Player, Enemy }
+    Turn currentTurn = Turn.Player;
+
+    public DiceRoller diceRoller;
+    public Player player;
+    public HealthDisplay playerHealth;
+    public HealthDisplay enemyHealth;
+    public Enemy currentEnemy;
+
+    public enum AllocationType { Attack, Block, Mana }
+
+    private Dictionary<AllocationType, List<int>> assignedDice = new();
+    private bool playerHasRolled = false;
+    private bool gameEnded = false;
+    private bool isProcessingTurn = false; // Prevent multiple simultaneous turn changes
+
+    void Start()
+    {
+        InitializeTurnManager();
+    }
+
+    void InitializeTurnManager()
+    {
+        // Initialize dice assignment dictionary
+        foreach (AllocationType type in System.Enum.GetValues(typeof(AllocationType)))
+        {
+            assignedDice[type] = new List<int>();
+        }
+
+        // Validate required components
+        if (!ValidateComponents())
+        {
+            Debug.LogError("TurnManager: Missing required components! Cannot start battle.");
+            gameEnded = true;
+            return;
+        }
+
+        StartPlayerTurn();
+    }
+
+    bool ValidateComponents()
+    {
+        if (player == null)
+        {
+            Debug.LogError("TurnManager: Player reference is missing!");
+            return false;
+        }
+        if (enemyHealth == null)
+        {
+            Debug.LogError("TurnManager: Enemy health reference is missing!");
+            return false;
+        }
+        if (playerHealth == null)
+        {
+            Debug.LogError("TurnManager: Player health reference is missing!");
+            return false;
+        }
+        if (currentEnemy == null)
+        {
+            Debug.LogError("TurnManager: Current enemy reference is missing!");
+            return false;
+        }
+        if (diceRoller == null)
+        {
+            Debug.LogError("TurnManager: Dice roller reference is missing!");
+            return false;
+        }
+        return true;
+    }
+
+    void Update()
+    {
+        if (gameEnded || isProcessingTurn)
+            return;
+
+        // Only check for game end conditions, don't manage turns here
+        CheckEndGame();
+    }
+
+    void StartPlayerTurn()
+    {
+        if (gameEnded || isProcessingTurn) return;
+
+        currentTurn = Turn.Player;
+        playerHasRolled = false;
+        isProcessingTurn = false;
+        
+        Debug.Log("🎲 Player's Turn! Click the die to roll.");
+
+        // Reset dice for new turn
+        foreach (var die in FindObjectsOfType<DiceRollNew>())
+        {
+            die.ResetDieForNewTurn();
+        }
+
+        player.OnTurnStart();
+    }
+
+    void StartEnemyTurn()
+    {
+        if (gameEnded || isProcessingTurn) return;
+
+        currentTurn = Turn.Enemy;
+        isProcessingTurn = true;
+        
+        Debug.Log("👹 Enemy's Turn...");
+
+        // Perform enemy action
+        currentEnemy.PerformAction(player);
+
+        // Check if the enemy action ended the game
+        CheckEndGame();
+
+        if (!gameEnded)
+        {
+            // Schedule return to player turn
+            Invoke(nameof(StartPlayerTurn), 2f);
+        }
+    }
+
+    public void PlayerRollViaClick()
+    {
+        if (currentTurn != Turn.Player || playerHasRolled || gameEnded)
+        {
+            Debug.LogWarning("Cannot roll: Not player turn, already rolled, or game ended");
+            return;
+        }
+
+        diceRoller.RollAllDice();
+        playerHasRolled = true;
+        Debug.Log("🎲 Dice rolled! Assign them to categories.");
+    }
+
+    public void AssignDieToCategory(int dieValue, AllocationType type)
+    {
+        if (currentTurn != Turn.Player || !playerHasRolled || gameEnded)
+            return;
+
+        // Remove die from all categories first
+        foreach (var list in assignedDice.Values)
+        {
+            list.Remove(dieValue);
+        }
+
+        // Add to the specified category
+        assignedDice[type].Add(dieValue);
+        Debug.Log($"🎲 Assigned {dieValue} to {type}");
+    }
+
+    public void ConfirmAssignments()
+    {
+        if (!playerHasRolled || currentTurn != Turn.Player || gameEnded)
+        {
+            Debug.LogWarning("Cannot confirm: Must roll dice first and be player turn");
+            return;
+        }
+
+        if (isProcessingTurn)
+        {
+            Debug.LogWarning("Turn already being processed");
+            return;
+        }
+
+        isProcessingTurn = true;
+
+        int totalAttack = assignedDice[AllocationType.Attack].Sum();
+        int totalBlock = assignedDice[AllocationType.Block].Sum();
+        int totalMana = assignedDice[AllocationType.Mana].Sum();
+
+        Debug.Log($"✅ Confirmed — Attack: {totalAttack}, Block: {totalBlock}, Mana: {totalMana}");
+
+        // Apply damage to enemy
+        if (totalAttack > 0)
+        {
+            enemyHealth.TakeDamage(totalAttack);
+        }
+
+        // Store block value for defense (you might want to implement this)
+        // player.SetBlockValue(totalBlock);
+
+        // Use mana (you might want to implement this)
+        // player.UseMana(totalMana);
+
+        // Clear assignments
+        foreach (var list in assignedDice.Values)
+        {
+            list.Clear();
+        }
+
+        // Check if the battle ended
+        CheckEndGame();
+
+        if (!gameEnded)
+        {
+            // Switch to enemy turn after a delay
+            Invoke(nameof(StartEnemyTurn), 2f);
+        }
+    }
+
+    public void CheckEndGame()
+    {
+        if (gameEnded) return;
+
+        bool playerDead = player.IsDead();
+        bool enemyDead = currentEnemy.IsDead();
+
+        if (playerDead)
+        {
+            EndGame(false);
+        }
+        else if (enemyDead)
+        {
+            EndGame(true);
+        }
+    }
+
+    void EndGame(bool playerWon)
+    {
+        if (gameEnded) return;
+
+        gameEnded = true;
+        isProcessingTurn = false;
+        CancelInvoke(); // Cancel any pending turn switches
+
+        if (playerWon)
+        {
+            Debug.Log("🎉 Player wins!");
+            ShowRewards();
+        }
+        else
+        {
+            Debug.Log("💀 Enemy wins! Game Over.");
+            // Handle game over logic here
+        }
+    }
+
+    void ShowRewards()
+    {
+        BattleReward rewardSystem = FindObjectOfType<BattleReward>();
+        RewardUI rewardUI = FindObjectOfType<RewardUI>();
+
+        if (rewardSystem != null && rewardUI != null)
+        {
+            var rewards = rewardSystem.GenerateRewardChoices(PlayerState.Instance.playerData.actProgress);
+            rewardUI.ShowRewards(rewards);
+        }
+        else
+        {
+            Debug.LogError("Reward system or UI not found.");
+        }
+    }
+
+    public int ResolveBladedShadowDamage(List<int> diceValues)
+    {
+        if (diceValues == null || diceValues.Count == 0) return 0;
+
+        int baseDamage = diceValues.Sum();
+        int finalDamage = baseDamage;
+
+        Dictionary<int, int> valueCounts = new();
+        foreach (int value in diceValues)
+        {
+            if (!valueCounts.ContainsKey(value))
+                valueCounts[value] = 1;
+            else
+                valueCounts[value]++;
+        }
+
+        if (valueCounts.Values.Any(count => count == 3))
+        {
+            finalDamage *= 3;
+            Debug.Log("💥 Triples detected! Tripling damage.");
+        }
+        else if (valueCounts.Values.Any(count => count == 2))
+        {
+            finalDamage *= 2;
+            Debug.Log("🔥 Doubles detected! Doubling damage.");
+        }
+
+        Debug.Log($"[Bladed Shadow] Final Damage: {finalDamage}");
+        return finalDamage;
+    }
+
+    // Public getters for UI and other systems
+    public bool IsPlayerTurn() => currentTurn == Turn.Player;
+    public bool HasRolledYet() => playerHasRolled;
+    public bool IsGameEnded() => gameEnded;
+
+    // Force end turn (for UI buttons or special abilities)
+    public void ForceEndPlayerTurn()
+    {
+        if (currentTurn == Turn.Player && !gameEnded && !isProcessingTurn)
+        {
+            Debug.Log("Player turn ended manually");
+            isProcessingTurn = true;
+            Invoke(nameof(StartEnemyTurn), 1f);
+        }
+    }
+}
